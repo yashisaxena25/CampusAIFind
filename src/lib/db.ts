@@ -5,15 +5,27 @@ import fs from "node:fs";
 function cleanSupabaseUrl(rawUrl: string): string {
   if (!rawUrl) return "";
   let url = rawUrl.trim();
+  url = url.replace(/^["']|["']$/g, "").trim();
   url = url.replace(/\/+$/, "");
   url = url.replace(/\/rest\/v1$/i, "").replace(/\/auth\/v1$/i, "");
-  return url;
+  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+    url = `https://${url}`;
+  }
+  return url.trim();
+}
+
+function cleanSupabaseKey(rawKey: string): string {
+  if (!rawKey) return "";
+  let key = rawKey.trim();
+  return key.replace(/^["']|["']$/g, "").trim();
 }
 
 // Initialize Supabase Client if env vars are present
 const rawSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
+const rawSupabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "";
+
 const supabaseUrl = cleanSupabaseUrl(rawSupabaseUrl);
-const supabaseKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "").trim();
+const supabaseKey = cleanSupabaseKey(rawSupabaseKey);
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseKey);
 

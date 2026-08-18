@@ -14,7 +14,7 @@ export async function GET() {
 
   if (isSupabaseConfigured && supabaseClient) {
     try {
-      const { data, error } = await supabaseClient.from("users").select("count", { count: "exact", head: true });
+      const { data, error } = await supabaseClient.from("users").select("id", { count: "exact", head: true });
       if (error) {
         supabaseTableStatus = "Error querying users table";
         dbError = error.message;
