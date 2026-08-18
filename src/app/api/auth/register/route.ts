@@ -51,16 +51,19 @@ export async function POST(req: NextRequest) {
   const emailRes = await sendOtpEmail(email, otp, name);
 
   if (!emailRes.success) {
-    console.warn(`[campusfind] Fallback OTP for ${email}: ${otp} (Brevo note: ${emailRes.message})`);
-  } else {
-    console.log(`[campusfind] Successfully sent OTP email via Brevo to ${email}`);
+    console.error(`[campusfind] Email OTP sending failed for ${email}: ${emailRes.message}`);
+    return NextResponse.json(
+      {
+        error: `Could not send OTP email: ${emailRes.message}. Please verify your Brevo API key & sender email in Vercel environment variables.`,
+        devOtp: process.env.NODE_ENV !== "production" ? otp : undefined,
+      },
+      { status: 500 }
+    );
   }
 
   return NextResponse.json({
     ok: true,
     email,
-    message: emailRes.success ? "OTP code sent to your email address!" : "Account created. Please check OTP.",
-    // If Brevo is not configured in dev, pass devOtp so offline local testing remains easy
-    devOtp: process.env.BREVO_API_KEY ? undefined : otp,
+    message: "OTP code sent successfully to your college email address!",
   });
 }

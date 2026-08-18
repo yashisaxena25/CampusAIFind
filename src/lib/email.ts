@@ -3,14 +3,22 @@
 
 export async function sendOtpEmail(toEmail: string, otpCode: string, name?: string): Promise<{ success: boolean; message?: string }> {
   const apiKey = process.env.BREVO_API_KEY;
-  const senderEmail = process.env.BREVO_SENDER_EMAIL || "noreply@campusfind.ai";
+  const senderEmail = process.env.BREVO_SENDER_EMAIL;
   const senderName = process.env.BREVO_SENDER_NAME || "CampusFind AI";
 
   if (!apiKey) {
-    console.warn("[CampusFind Brevo] BREVO_API_KEY is not configured. OTP was printed to server log instead:", otpCode);
+    console.warn("[CampusFind Brevo] BREVO_API_KEY is not configured.");
     return {
       success: false,
-      message: "BREVO_API_KEY environment variable is not configured.",
+      message: "BREVO_API_KEY environment variable is missing on Vercel.",
+    };
+  }
+
+  if (!senderEmail) {
+    console.warn("[CampusFind Brevo] BREVO_SENDER_EMAIL is not configured.");
+    return {
+      success: false,
+      message: "BREVO_SENDER_EMAIL environment variable is missing. Set it to your verified Brevo account email.",
     };
   }
 
@@ -61,13 +69,13 @@ export async function sendOtpEmail(toEmail: string, otpCode: string, name?: stri
       method: "POST",
       headers: {
         accept: "application/json",
-        "api-key": apiKey,
+        "api-key": apiKey.trim(),
         "content-type": "application/json",
       },
       body: JSON.stringify({
         sender: {
-          name: senderName,
-          email: senderEmail,
+          name: senderName.trim(),
+          email: senderEmail.trim(),
         },
         to: [
           {
@@ -80,12 +88,13 @@ export async function sendOtpEmail(toEmail: string, otpCode: string, name?: stri
       }),
     });
 
+    const responseData = await res.json().catch(() => ({}));
+
     if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      console.error("[CampusFind Brevo Error]", res.status, errData);
+      console.error("[CampusFind Brevo API Error]", res.status, responseData);
       return {
         success: false,
-        message: errData.message || `Brevo returned HTTP status ${res.status}`,
+        message: responseData.message || `Brevo API error (Status ${res.status})`,
       };
     }
 
