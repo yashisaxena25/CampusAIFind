@@ -3,14 +3,14 @@ import path from "node:path";
 import fs from "node:fs";
 
 // Initialize Supabase Client if env vars are present
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY;
+const supabaseUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "").trim();
+const supabaseKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "").trim();
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseKey);
 
-let supabaseClient: SupabaseClient | null = null;
+export let supabaseClient: SupabaseClient | null = null;
 if (isSupabaseConfigured) {
-  supabaseClient = createClient(supabaseUrl!, supabaseKey!);
+  supabaseClient = createClient(supabaseUrl, supabaseKey);
 }
 
 // Lazy fallback SQLite instance for local dev if Supabase is not configured
