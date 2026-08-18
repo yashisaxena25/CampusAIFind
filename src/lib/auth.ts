@@ -76,7 +76,12 @@ export function generateOtp() {
 
 // College-email allowlist check. Configure real domains via env in production.
 export function isCollegeEmail(email: string) {
-  const allowed = (process.env.COLLEGE_EMAIL_DOMAINS || "college.edu,edu.in,ac.in")
+  if (!email || !email.includes("@")) return false;
+  const envDomains = process.env.COLLEGE_EMAIL_DOMAINS;
+  if (!envDomains || envDomains === "*") {
+    return true;
+  }
+  const allowed = envDomains
     .split(",")
     .map((d) => d.trim().toLowerCase());
   const domain = email.split("@")[1]?.toLowerCase();

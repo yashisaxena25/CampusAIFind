@@ -14,56 +14,63 @@ const schema = z.object({
 });
 
 export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => null);
-  const parsed = schema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Please check your details and try again." }, { status: 400 });
-  }
-  const { name, email, password, role } = parsed.data;
+  try {
+    const body = await req.json().catch(() => null);
+    const parsed = schema.safeParse(body);
+    if (!parsed.success) {
+      return NextResponse.json({ error: "Please check your name, email, and password (min 6 characters)." }, { status: 400 });
+    }
+    const { name, email, password, role } = parsed.data;
 
-  if (!isCollegeEmail(email)) {
+    if (!isCollegeEmail(email)) {
+      return NextResponse.json(
+        { error: "Please enter a valid email address to register." },
+        { status: 400 }
+      );
+    }
+
+    const existing = await findUserByEmail(email);
+    if (existing && (existing.is_verified || existing.isVerified)) {
+      return NextResponse.json({ error: "An account with this email already exists. Please log in." }, { status: 409 });
+    }
+
+    const passwordHash = await hashPassword(password);
+    const otp = generateOtp();
+    const otpExpires = Date.now() + 10 * 60 * 1000;
+
+    await createOrUpdateUser({
+      existingId: existing?.id,
+      name,
+      email,
+      passwordHash,
+      role,
+      otpCode: otp,
+      otpExpires,
+    });
+
+    // Send real email OTP via Brevo API
+    const emailRes = await sendOtpEmail(email, otp, name);
+
+    if (!emailRes.success) {
+      console.error(`[campusfind] Email OTP sending failed for ${email}: ${emailRes.message}`);
+      return NextResponse.json(
+        {
+          error: `Could not send OTP email: ${emailRes.message}`,
+        },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      ok: true,
+      email,
+      message: "OTP code sent successfully to your email address!",
+    });
+  } catch (err: any) {
+    console.error("[CampusFind Register Exception]", err);
     return NextResponse.json(
-      { error: "Please use your college email address to register." },
-      { status: 400 }
-    );
-  }
-
-  const existing = await findUserByEmail(email);
-  if (existing && (existing.is_verified || existing.isVerified)) {
-    return NextResponse.json({ error: "An account with this email already exists." }, { status: 409 });
-  }
-
-  const passwordHash = await hashPassword(password);
-  const otp = generateOtp();
-  const otpExpires = Date.now() + 10 * 60 * 1000;
-
-  await createOrUpdateUser({
-    existingId: existing?.id,
-    name,
-    email,
-    passwordHash,
-    role,
-    otpCode: otp,
-    otpExpires,
-  });
-
-  // Send real email OTP via Brevo API
-  const emailRes = await sendOtpEmail(email, otp, name);
-
-  if (!emailRes.success) {
-    console.error(`[campusfind] Email OTP sending failed for ${email}: ${emailRes.message}`);
-    return NextResponse.json(
-      {
-        error: `Could not send OTP email: ${emailRes.message}. Please verify your Brevo API key & sender email in Vercel environment variables.`,
-        devOtp: process.env.NODE_ENV !== "production" ? otp : undefined,
-      },
+      { error: err?.message || "Registration failed. Please try again." },
       { status: 500 }
     );
   }
-
-  return NextResponse.json({
-    ok: true,
-    email,
-    message: "OTP code sent successfully to your college email address!",
-  });
 }
