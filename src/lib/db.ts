@@ -13,18 +13,20 @@ if (isSupabaseConfigured) {
   supabaseClient = createClient(supabaseUrl!, supabaseKey!);
 }
 
-// Fallback SQLite instance for local dev if Supabase is not yet configured
-let sqliteDb: any = null;
-if (!isSupabaseConfigured) {
+// Lazy fallback SQLite instance for local dev if Supabase is not configured
+let sqliteDbInstance: any = null;
+function getSqliteDb() {
+  if (isSupabaseConfigured) return null;
+  if (sqliteDbInstance) return sqliteDbInstance;
   try {
     const { DatabaseSync } = require("node:sqlite");
     const dataDir = path.join(process.cwd(), "data");
     if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
     const dbPath = path.join(dataDir, "campusfind.sqlite");
-    sqliteDb = new DatabaseSync(dbPath);
-    sqliteDb.exec("PRAGMA journal_mode = WAL;");
-    sqliteDb.exec("PRAGMA foreign_keys = ON;");
-    sqliteDb.exec(`
+    sqliteDbInstance = new DatabaseSync(dbPath);
+    sqliteDbInstance.exec("PRAGMA journal_mode = WAL;");
+    sqliteDbInstance.exec("PRAGMA foreign_keys = ON;");
+    sqliteDbInstance.exec(`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL,
         role TEXT NOT NULL DEFAULT 'student', college_id TEXT NOT NULL DEFAULT 'default-college',
@@ -57,8 +59,9 @@ if (!isSupabaseConfigured) {
         body TEXT NOT NULL, created_at INTEGER NOT NULL
       );
     `);
+    return sqliteDbInstance;
   } catch (err) {
-    console.warn("[campusfind] SQLite fallback disabled or unavailable:", err);
+    return null;
   }
 }
 
@@ -68,23 +71,33 @@ export function newId(prefix: string) {
 
 // ---------------- USER OPERATIONS ----------------
 export async function findUserByEmail(email: string) {
+  const cleanEmail = (email || "").trim().toLowerCase();
   if (supabaseClient) {
-    const { data } = await supabaseClient.from("users").select("*").eq("email", email).maybeSingle();
+    const { data, error } = await supabaseClient.from("users").select("*").ilike("email", cleanEmail).maybeSingle();
+    if (error) {
+      console.error("[CampusFind Supabase findUserByEmail Error]", error.message);
+    }
     return data;
   }
-  if (sqliteDb) {
-    return sqliteDb.prepare("SELECT * FROM users WHERE email = ?").get(email);
+  const db = getSqliteDb();
+  if (db) {
+    return db.prepare("SELECT * FROM users WHERE LOWER(email) = LOWER(?)").get(cleanEmail);
   }
+  console.warn("[CampusFind DB Warning] No Supabase database configured in environment variables!");
   return null;
 }
 
 export async function findUserById(id: string) {
   if (supabaseClient) {
-    const { data } = await supabaseClient.from("users").select("*").eq("id", id).maybeSingle();
+    const { data, error } = await supabaseClient.from("users").select("*").eq("id", id).maybeSingle();
+    if (error) {
+      console.error("[CampusFind Supabase findUserById Error]", error.message);
+    }
     return data;
   }
-  if (sqliteDb) {
-    return sqliteDb.prepare("SELECT * FROM users WHERE id = ?").get(id);
+  const db = getSqliteDb();
+  if (db) {
+    return db.prepare("SELECT * FROM users WHERE id = ?").get(id);
   }
   return null;
 }
@@ -106,24 +119,30 @@ export async function createOrUpdateUser({
   otpCode: string;
   otpExpires: number;
 }) {
+  const cleanEmail = (email || "").trim().toLowerCase();
   if (supabaseClient) {
     if (existingId) {
-      await supabaseClient
+      const { error } = await supabaseClient
         .from("users")
         .update({
           name,
+          email: cleanEmail,
           password_hash: passwordHash,
           otp_code: otpCode,
           otp_expires: otpExpires,
         })
         .eq("id", existingId);
+      if (error) {
+        console.error("[CampusFind Supabase User Update Error]", error.message);
+        throw new Error(`Supabase DB Error: ${error.message}`);
+      }
       return existingId;
     } else {
       const id = newId("user");
-      await supabaseClient.from("users").insert({
+      const { error } = await supabaseClient.from("users").insert({
         id,
         name,
-        email,
+        email: cleanEmail,
         password_hash: passwordHash,
         role,
         college_id: "default-college",
@@ -133,18 +152,23 @@ export async function createOrUpdateUser({
         otp_expires: otpExpires,
         created_at: Date.now(),
       });
+      if (error) {
+        console.error("[CampusFind Supabase User Insert Error]", error.message);
+        throw new Error(`Supabase DB Error: ${error.message}. Did you run supabase-schema.sql?`);
+      }
       return id;
     }
   }
-  if (sqliteDb) {
+  const db = getSqliteDb();
+  if (db) {
     if (existingId) {
-      sqliteDb
+      db
         .prepare("UPDATE users SET name = ?, password_hash = ?, otp_code = ?, otp_expires = ? WHERE id = ?")
         .run(name, passwordHash, otpCode, otpExpires, existingId);
       return existingId;
     } else {
       const id = newId("user");
-      sqliteDb
+      db
         .prepare(
           `INSERT INTO users (id, name, email, password_hash, role, college_id, is_verified, otp_code, otp_expires, created_at)
            VALUES (?, ?, ?, ?, ?, 'default-college', 0, ?, ?, ?)`
@@ -164,8 +188,9 @@ export async function verifyUser(userId: string) {
       .eq("id", userId);
     return;
   }
-  if (sqliteDb) {
-    sqliteDb.prepare("UPDATE users SET is_verified = 1, otp_code = NULL, otp_expires = NULL WHERE id = ?").run(userId);
+  const db = getSqliteDb();
+  if (db) {
+    db.prepare("UPDATE users SET is_verified = 1, otp_code = NULL, otp_expires = NULL WHERE id = ?").run(userId);
   }
 }
 
@@ -179,7 +204,8 @@ export async function getLostItems(category?: string | null, location?: string |
     const { data } = await query.order("created_at", { ascending: false });
     return data || [];
   }
-  if (sqliteDb) {
+  const db = getSqliteDb();
+  if (db) {
     let sql = "SELECT * FROM lost_items WHERE status != 'cancelled'";
     const params: any[] = [];
     if (category && category !== "all") {
@@ -195,7 +221,7 @@ export async function getLostItems(category?: string | null, location?: string |
       params.push(`%${q}%`, `%${q}%`, `%${q}%`);
     }
     sql += " ORDER BY created_at DESC";
-    return sqliteDb.prepare(sql).all(...params);
+    return db.prepare(sql).all(...params);
   }
   return [];
 }
@@ -205,8 +231,9 @@ export async function getLostItemById(id: string) {
     const { data } = await supabaseClient.from("lost_items").select("*").eq("id", id).maybeSingle();
     return data;
   }
-  if (sqliteDb) {
-    return sqliteDb.prepare("SELECT * FROM lost_items WHERE id = ?").get(id);
+  const db = getSqliteDb();
+  if (db) {
+    return db.prepare("SELECT * FROM lost_items WHERE id = ?").get(id);
   }
   return null;
 }
@@ -216,8 +243,9 @@ export async function getActiveLostItems() {
     const { data } = await supabaseClient.from("lost_items").select("*").eq("status", "active");
     return data || [];
   }
-  if (sqliteDb) {
-    return sqliteDb.prepare("SELECT * FROM lost_items WHERE status = 'active'").all();
+  const db = getSqliteDb();
+  if (db) {
+    return db.prepare("SELECT * FROM lost_items WHERE status = 'active'").all();
   }
   return [];
 }
@@ -227,8 +255,9 @@ export async function createLostItem(item: any) {
     await supabaseClient.from("lost_items").insert(item);
     return item.id;
   }
-  if (sqliteDb) {
-    sqliteDb
+  const db = getSqliteDb();
+  if (db) {
+    db
       .prepare(
         `INSERT INTO lost_items
           (id, user_id, title, category, description, color, brand, model, identifying_features,
@@ -254,11 +283,12 @@ export async function updateLostItemStatus(id: string, status: string, rewardSta
     await supabaseClient.from("lost_items").update(payload).eq("id", id);
     return;
   }
-  if (sqliteDb) {
+  const db = getSqliteDb();
+  if (db) {
     if (rewardStatus) {
-      sqliteDb.prepare("UPDATE lost_items SET status = ?, reward_status = ? WHERE id = ?").run(status, rewardStatus, id);
+      db.prepare("UPDATE lost_items SET status = ?, reward_status = ? WHERE id = ?").run(status, rewardStatus, id);
     } else {
-      sqliteDb.prepare("UPDATE lost_items SET status = ? WHERE id = ?").run(status, id);
+      db.prepare("UPDATE lost_items SET status = ? WHERE id = ?").run(status, id);
     }
   }
 }
@@ -273,7 +303,8 @@ export async function getFoundItems(category?: string | null, location?: string 
     const { data } = await query.order("created_at", { ascending: false });
     return data || [];
   }
-  if (sqliteDb) {
+  const db = getSqliteDb();
+  if (db) {
     let sql = "SELECT * FROM found_items WHERE status != 'cancelled'";
     const params: any[] = [];
     if (category && category !== "all") {
@@ -289,7 +320,7 @@ export async function getFoundItems(category?: string | null, location?: string 
       params.push(`%${q}%`, `%${q}%`, `%${q}%`);
     }
     sql += " ORDER BY created_at DESC";
-    return sqliteDb.prepare(sql).all(...params);
+    return db.prepare(sql).all(...params);
   }
   return [];
 }
@@ -299,8 +330,9 @@ export async function getFoundItemById(id: string) {
     const { data } = await supabaseClient.from("found_items").select("*").eq("id", id).maybeSingle();
     return data;
   }
-  if (sqliteDb) {
-    return sqliteDb.prepare("SELECT * FROM found_items WHERE id = ?").get(id);
+  const db = getSqliteDb();
+  if (db) {
+    return db.prepare("SELECT * FROM found_items WHERE id = ?").get(id);
   }
   return null;
 }
@@ -310,8 +342,9 @@ export async function getActiveFoundItems() {
     const { data } = await supabaseClient.from("found_items").select("*").eq("status", "active");
     return data || [];
   }
-  if (sqliteDb) {
-    return sqliteDb.prepare("SELECT * FROM found_items WHERE status = 'active'").all();
+  const db = getSqliteDb();
+  if (db) {
+    return db.prepare("SELECT * FROM found_items WHERE status = 'active'").all();
   }
   return [];
 }
@@ -321,8 +354,9 @@ export async function createFoundItem(item: any) {
     await supabaseClient.from("found_items").insert(item);
     return item.id;
   }
-  if (sqliteDb) {
-    sqliteDb
+  const db = getSqliteDb();
+  if (db) {
+    db
       .prepare(
         `INSERT INTO found_items
           (id, user_id, title, category, description, color, brand, model, identifying_features,
@@ -345,8 +379,9 @@ export async function updateFoundItemStatus(id: string, status: string) {
     await supabaseClient.from("found_items").update({ status }).eq("id", id);
     return;
   }
-  if (sqliteDb) {
-    sqliteDb.prepare("UPDATE found_items SET status = ? WHERE id = ?").run(status, id);
+  const db = getSqliteDb();
+  if (db) {
+    db.prepare("UPDATE found_items SET status = ? WHERE id = ?").run(status, id);
   }
 }
 
@@ -356,9 +391,10 @@ export async function createMatch(match: any) {
     await supabaseClient.from("matches").insert(match).select().maybeSingle();
     return match.id;
   }
-  if (sqliteDb) {
+  const db = getSqliteDb();
+  if (db) {
     try {
-      sqliteDb
+      db
         .prepare(
           `INSERT OR IGNORE INTO matches
             (id, lost_item_id, found_item_id, text_score, category_score, color_score, brand_score,
@@ -416,8 +452,9 @@ export async function getMatchesForUser(userId: string) {
     );
     return enriched;
   }
-  if (sqliteDb) {
-    return sqliteDb
+  const db = getSqliteDb();
+  if (db) {
+    return db
       .prepare(
         `SELECT m.*,
                 l.title as lost_title, l.user_id as lost_user_id, l.image as lost_image, l.reward_amount,
@@ -445,8 +482,9 @@ export async function getMatchById(id: string) {
       found_user_id: found?.user_id,
     };
   }
-  if (sqliteDb) {
-    return sqliteDb
+  const db = getSqliteDb();
+  if (db) {
+    return db
       .prepare(
         `SELECT m.*, l.user_id as lost_user_id, f.user_id as found_user_id
          FROM matches m
@@ -464,8 +502,9 @@ export async function updateMatchStatus(id: string, status: string) {
     await supabaseClient.from("matches").update({ status }).eq("id", id);
     return;
   }
-  if (sqliteDb) {
-    sqliteDb.prepare("UPDATE matches SET status = ? WHERE id = ?").run(status, id);
+  const db = getSqliteDb();
+  if (db) {
+    db.prepare("UPDATE matches SET status = ? WHERE id = ?").run(status, id);
   }
 }
 
@@ -489,8 +528,9 @@ export async function getMessagesByMatchId(matchId: string) {
     );
     return enriched;
   }
-  if (sqliteDb) {
-    return sqliteDb
+  const db = getSqliteDb();
+  if (db) {
+    return db
       .prepare(
         `SELECT msg.*, u.name as sender_name FROM messages msg
          JOIN users u ON u.id = msg.sender_id
@@ -506,8 +546,9 @@ export async function createMessage(msg: { id: string; match_id: string; sender_
     await supabaseClient.from("messages").insert(msg);
     return msg.id;
   }
-  if (sqliteDb) {
-    sqliteDb
+  const db = getSqliteDb();
+  if (db) {
+    db
       .prepare("INSERT INTO messages (id, match_id, sender_id, body, created_at) VALUES (?, ?, ?, ?, ?)")
       .run(msg.id, msg.match_id, msg.sender_id, msg.body, msg.created_at);
     return msg.id;
@@ -538,16 +579,17 @@ export async function getMyReports(userId: string) {
 
     return { lost: lostList, found: foundList, lostMap, foundMap };
   }
-  if (sqliteDb) {
-    const lost = sqliteDb.prepare("SELECT * FROM lost_items WHERE user_id = ? ORDER BY created_at DESC").all(userId);
-    const found = sqliteDb.prepare("SELECT * FROM found_items WHERE user_id = ? ORDER BY created_at DESC").all(userId);
+  const db = getSqliteDb();
+  if (db) {
+    const lost = db.prepare("SELECT * FROM lost_items WHERE user_id = ? ORDER BY created_at DESC").all(userId);
+    const found = db.prepare("SELECT * FROM found_items WHERE user_id = ? ORDER BY created_at DESC").all(userId);
 
-    const matchCounts = sqliteDb
+    const matchCounts = db
       .prepare(
         `SELECT lost_item_id, COUNT(*) as c FROM matches WHERE lost_item_id IN (${lost.map(() => "?").join(",") || "''"}) GROUP BY lost_item_id`
       )
       .all(...lost.map((l: any) => l.id));
-    const foundMatchCounts = sqliteDb
+    const foundMatchCounts = db
       .prepare(
         `SELECT found_item_id, COUNT(*) as c FROM matches WHERE found_item_id IN (${found.map(() => "?").join(",") || "''"}) GROUP BY found_item_id`
       )
@@ -597,17 +639,18 @@ export async function getAdminStats() {
       topLocations: [],
     };
   }
-  if (sqliteDb) {
-    const totalLost = (sqliteDb.prepare("SELECT COUNT(*) as c FROM lost_items").get() as any).c;
-    const totalFound = (sqliteDb.prepare("SELECT COUNT(*) as c FROM found_items").get() as any).c;
-    const totalMatches = (sqliteDb.prepare("SELECT COUNT(*) as c FROM matches").get() as any).c;
-    const verifiedMatches = (sqliteDb.prepare("SELECT COUNT(*) as c FROM matches WHERE status = 'verified_match'").get() as any).c;
-    const recovered = (sqliteDb.prepare("SELECT COUNT(*) as c FROM lost_items WHERE status = 'case_closed'").get() as any).c;
-    const disputed = (sqliteDb.prepare("SELECT COUNT(*) as c FROM matches WHERE status = 'disputed'").get() as any).c;
-    const rewardsOffered = (sqliteDb.prepare("SELECT COALESCE(SUM(reward_amount),0) as s FROM lost_items WHERE reward_amount > 0").get() as any).s;
-    const rewardsReleased = (sqliteDb.prepare("SELECT COALESCE(SUM(reward_amount),0) as s FROM lost_items WHERE reward_status = 'reward_released'").get() as any).s;
-    const topCategories = sqliteDb.prepare("SELECT category, COUNT(*) as c FROM lost_items GROUP BY category ORDER BY c DESC LIMIT 5").all();
-    const topLocations = sqliteDb.prepare("SELECT lost_location as location, COUNT(*) as c FROM lost_items GROUP BY lost_location ORDER BY c DESC LIMIT 5").all();
+  const db = getSqliteDb();
+  if (db) {
+    const totalLost = (db.prepare("SELECT COUNT(*) as c FROM lost_items").get() as any).c;
+    const totalFound = (db.prepare("SELECT COUNT(*) as c FROM found_items").get() as any).c;
+    const totalMatches = (db.prepare("SELECT COUNT(*) as c FROM matches").get() as any).c;
+    const verifiedMatches = (db.prepare("SELECT COUNT(*) as c FROM matches WHERE status = 'verified_match'").get() as any).c;
+    const recovered = (db.prepare("SELECT COUNT(*) as c FROM lost_items WHERE status = 'case_closed'").get() as any).c;
+    const disputed = (db.prepare("SELECT COUNT(*) as c FROM matches WHERE status = 'disputed'").get() as any).c;
+    const rewardsOffered = (db.prepare("SELECT COALESCE(SUM(reward_amount),0) as s FROM lost_items WHERE reward_amount > 0").get() as any).s;
+    const rewardsReleased = (db.prepare("SELECT COALESCE(SUM(reward_amount),0) as s FROM lost_items WHERE reward_status = 'reward_released'").get() as any).s;
+    const topCategories = db.prepare("SELECT category, COUNT(*) as c FROM lost_items GROUP BY category ORDER BY c DESC LIMIT 5").all();
+    const topLocations = db.prepare("SELECT lost_location as location, COUNT(*) as c FROM lost_items GROUP BY lost_location ORDER BY c DESC LIMIT 5").all();
 
     return {
       totalLost,
@@ -656,10 +699,11 @@ export async function getAdminReports() {
 
     return { lost: enrichedLost, found: enrichedFound, disputes: enrichedDisputes };
   }
-  if (sqliteDb) {
-    const lost = sqliteDb.prepare("SELECT l.id, l.title, l.category, l.status, l.reward_amount, l.created_at, u.name as reporter, u.email as reporter_email FROM lost_items l JOIN users u ON u.id = l.user_id ORDER BY l.created_at DESC").all();
-    const found = sqliteDb.prepare("SELECT f.id, f.title, f.category, f.status, f.created_at, u.name as reporter, u.email as reporter_email FROM found_items f JOIN users u ON u.id = f.user_id ORDER BY f.created_at DESC").all();
-    const disputes = sqliteDb.prepare("SELECT m.id, m.overall_score, m.status, l.title as lost_title, f.title as found_title FROM matches m JOIN lost_items l ON l.id = m.lost_item_id JOIN found_items f ON f.id = m.found_item_id WHERE m.status = 'disputed'").all();
+  const db = getSqliteDb();
+  if (db) {
+    const lost = db.prepare("SELECT l.id, l.title, l.category, l.status, l.reward_amount, l.created_at, u.name as reporter, u.email as reporter_email FROM lost_items l JOIN users u ON u.id = l.user_id ORDER BY l.created_at DESC").all();
+    const found = db.prepare("SELECT f.id, f.title, f.category, f.status, f.created_at, u.name as reporter, u.email as reporter_email FROM found_items f JOIN users u ON u.id = f.user_id ORDER BY f.created_at DESC").all();
+    const disputes = db.prepare("SELECT m.id, m.overall_score, m.status, l.title as lost_title, f.title as found_title FROM matches m JOIN lost_items l ON l.id = m.lost_item_id JOIN found_items f ON f.id = m.found_item_id WHERE m.status = 'disputed'").all();
     return { lost, found, disputes };
   }
   return { lost: [], found: [], disputes: [] };
@@ -687,8 +731,9 @@ export async function getAdminUsers() {
       createdAt: u.created_at,
     }));
   }
-  if (sqliteDb) {
-    return sqliteDb.prepare("SELECT id, name, email, role, is_verified as isVerified, is_banned as isBanned, created_at as createdAt FROM users ORDER BY created_at DESC").all();
+  const db = getSqliteDb();
+  if (db) {
+    return db.prepare("SELECT id, name, email, role, is_verified as isVerified, is_banned as isBanned, created_at as createdAt FROM users ORDER BY created_at DESC").all();
   }
   return [];
 }
@@ -699,7 +744,8 @@ export async function updateAdminUserStatus(userId: string, action: "ban" | "unb
     await supabaseClient.from("users").update({ is_banned: isBanned }).eq("id", userId);
     return;
   }
-  if (sqliteDb) {
-    sqliteDb.prepare("UPDATE users SET is_banned = ? WHERE id = ?").run(isBanned ? 1 : 0, userId);
+  const db = getSqliteDb();
+  if (db) {
+    db.prepare("UPDATE users SET is_banned = ? WHERE id = ?").run(isBanned ? 1 : 0, userId);
   }
 }
