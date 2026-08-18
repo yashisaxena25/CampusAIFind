@@ -74,16 +74,26 @@ export async function findUserByEmail(email: string) {
   const cleanEmail = (email || "").trim().toLowerCase();
   if (!cleanEmail) return null;
   if (supabaseClient) {
-    const { data, error } = await supabaseClient
+    const { data: exactData } = await supabaseClient
+      .from("users")
+      .select("*")
+      .eq("email", cleanEmail)
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (exactData && exactData.length > 0) return exactData[0];
+
+    const { data: ilikeData, error } = await supabaseClient
       .from("users")
       .select("*")
       .ilike("email", cleanEmail)
       .order("created_at", { ascending: false })
       .limit(1);
+
     if (error) {
       console.error("[CampusFind Supabase findUserByEmail Error]", error.message);
     }
-    return data && data.length > 0 ? data[0] : null;
+    return ilikeData && ilikeData.length > 0 ? ilikeData[0] : null;
   }
   const db = getSqliteDb();
   if (db) {
@@ -94,6 +104,7 @@ export async function findUserByEmail(email: string) {
 }
 
 export async function findUserById(id: string) {
+  if (!id) return null;
   if (supabaseClient) {
     const { data, error } = await supabaseClient.from("users").select("*").eq("id", id).maybeSingle();
     if (error) {
@@ -127,8 +138,13 @@ export async function createOrUpdateUser({
 }) {
   const cleanEmail = (email || "").trim().toLowerCase();
   if (supabaseClient) {
-    const existing = existingId ? { id: existingId } : await findUserByEmail(cleanEmail);
-    if (existing) {
+    let targetId = existingId;
+    if (!targetId) {
+      const existing = await findUserByEmail(cleanEmail);
+      if (existing) targetId = existing.id;
+    }
+
+    if (targetId) {
       const { error } = await supabaseClient
         .from("users")
         .update({
@@ -139,12 +155,12 @@ export async function createOrUpdateUser({
           otp_expires: otpExpires,
           is_verified: false,
         })
-        .eq("id", existing.id);
+        .eq("id", targetId);
       if (error) {
         console.error("[CampusFind Supabase User Update Error]", error.message);
         throw new Error(`Supabase DB Error: ${error.message}`);
       }
-      return existing.id;
+      return targetId;
     } else {
       const id = newId("user");
       const { error } = await supabaseClient.from("users").insert({
