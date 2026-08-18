@@ -72,16 +72,22 @@ export function newId(prefix: string) {
 // ---------------- USER OPERATIONS ----------------
 export async function findUserByEmail(email: string) {
   const cleanEmail = (email || "").trim().toLowerCase();
+  if (!cleanEmail) return null;
   if (supabaseClient) {
-    const { data, error } = await supabaseClient.from("users").select("*").ilike("email", cleanEmail).maybeSingle();
+    const { data, error } = await supabaseClient
+      .from("users")
+      .select("*")
+      .ilike("email", cleanEmail)
+      .order("created_at", { ascending: false })
+      .limit(1);
     if (error) {
       console.error("[CampusFind Supabase findUserByEmail Error]", error.message);
     }
-    return data;
+    return data && data.length > 0 ? data[0] : null;
   }
   const db = getSqliteDb();
   if (db) {
-    return db.prepare("SELECT * FROM users WHERE LOWER(email) = LOWER(?)").get(cleanEmail);
+    return db.prepare("SELECT * FROM users WHERE LOWER(email) = LOWER(?) ORDER BY created_at DESC LIMIT 1").get(cleanEmail);
   }
   console.warn("[CampusFind DB Warning] No Supabase database configured in environment variables!");
   return null;
@@ -121,7 +127,8 @@ export async function createOrUpdateUser({
 }) {
   const cleanEmail = (email || "").trim().toLowerCase();
   if (supabaseClient) {
-    if (existingId) {
+    const existing = existingId ? { id: existingId } : await findUserByEmail(cleanEmail);
+    if (existing) {
       const { error } = await supabaseClient
         .from("users")
         .update({
@@ -130,13 +137,14 @@ export async function createOrUpdateUser({
           password_hash: passwordHash,
           otp_code: otpCode,
           otp_expires: otpExpires,
+          is_verified: false,
         })
-        .eq("id", existingId);
+        .eq("id", existing.id);
       if (error) {
         console.error("[CampusFind Supabase User Update Error]", error.message);
         throw new Error(`Supabase DB Error: ${error.message}`);
       }
-      return existingId;
+      return existing.id;
     } else {
       const id = newId("user");
       const { error } = await supabaseClient.from("users").insert({
