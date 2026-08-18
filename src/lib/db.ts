@@ -2,8 +2,17 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import path from "node:path";
 import fs from "node:fs";
 
+function cleanSupabaseUrl(rawUrl: string): string {
+  if (!rawUrl) return "";
+  let url = rawUrl.trim();
+  url = url.replace(/\/+$/, "");
+  url = url.replace(/\/rest\/v1$/i, "").replace(/\/auth\/v1$/i, "");
+  return url;
+}
+
 // Initialize Supabase Client if env vars are present
-const supabaseUrl = (process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "").trim();
+const rawSupabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
+const supabaseUrl = cleanSupabaseUrl(rawSupabaseUrl);
 const supabaseKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "").trim();
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseKey);
